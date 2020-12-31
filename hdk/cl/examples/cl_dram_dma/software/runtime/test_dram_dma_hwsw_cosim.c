@@ -36,6 +36,7 @@
 #include "test_dram_dma_common.h"
 
 #define MEM_16G              (1ULL << 34)
+#define NDIMMS               4
 
 void usage(const char* program_name);
 int dma_example_hwsw_cosim(int slot_id, size_t buffer_size);
@@ -147,14 +148,18 @@ int dma_example_hwsw_cosim(int slot_id, size_t buffer_size)
     write_fd = -1;
     read_fd = -1;
 
-    uint8_t *write_buffer = malloc(buffer_size);
-    uint8_t *read_buffer = malloc(buffer_size);
-    if (write_buffer == NULL || read_buffer == NULL) {
-        rc = -ENOMEM;
-        goto out;
+    uint8_t *write_buffer[NDIMMS];
+    uint8_t *read_buffer[NDIMMS];
+    for (int dimm = 0; dimm < NDIMMS; dimm++){
+        write_buffer[dimm] = malloc(buffer_size);
+        read_buffer[dimm] = malloc(buffer_size);
+        if (write_buffer[dimm] == NULL || read_buffer[dimm] == NULL) {
+            rc = -ENOMEM;
+            goto out;
+        }
     }
 
-    printf("Memory has been allocated, initializing DMA and filling the buffer...\n");
+    printf("Memory has been allocated, initializing DMA and filling the buffers...\n");
 #if !defined(SV_TEST)
     read_fd = fpga_dma_open_queue(FPGA_DMA_XDMA, slot_id,
         /*channel*/ 0, /*is_read*/ true);
@@ -170,24 +175,26 @@ int dma_example_hwsw_cosim(int slot_id, size_t buffer_size)
     deselect_atg_hw();
     printf("Done DDR init...\n");
 #endif
-    printf("filling buffer with  random data...\n") ;
+    printf("filling buffers with  random data...\n") ;
 
-    rc = fill_buffer_urandom(write_buffer, buffer_size);
-    fail_on(rc, out, "unable to initialize buffer");
-
+    for (int dimm = 0; dimm < NDIMMS; dimm++){
+      rc = fill_buffer_urandom(write_buffer[dimm], buffer_size);
+      fail_on(rc, out, "unable to initialize buffer");
+    }
+    
     printf("Now performing the DMA transactions...\n");
-    for (dimm = 0; dimm < 4; dimm++) {
-        rc = do_dma_write(write_fd, write_buffer, buffer_size,
+    for (dimm = 0; dimm < NDIMMS; dimm++) {
+        rc = do_dma_write(write_fd, write_buffer[dimm], buffer_size,
             dimm * MEM_16G, dimm, slot_id);
         fail_on(rc, out, "DMA write failed on DIMM: %d", dimm);
     }
 
     bool passed = true;
-    for (dimm = 0; dimm < 4; dimm++) {
-        rc = do_dma_read(read_fd, read_buffer, buffer_size,
+    for (dimm = 0; dimm < NDIMMS; dimm++) {
+        rc = do_dma_read(read_fd, read_buffer[dimm], buffer_size,
             dimm * MEM_16G, dimm, slot_id);
         fail_on(rc, out, "DMA read failed on DIMM: %d", dimm);
-        uint64_t differ = buffer_compare(read_buffer, write_buffer, buffer_size);
+        uint64_t differ = buffer_compare(read_buffer[dimm], write_buffer[dimm], buffer_size);
         if (differ != 0) {
             log_error("DIMM %d failed with %lu bytes which differ", dimm, differ);
             passed = false;
@@ -198,11 +205,13 @@ int dma_example_hwsw_cosim(int slot_id, size_t buffer_size)
     rc = (passed) ? 0 : 1;
 
 out:
-    if (write_buffer != NULL) {
-        free(write_buffer);
-    }
-    if (read_buffer != NULL) {
-        free(read_buffer);
+    for (int dimm = 0; dimm < NDIMMS; dimm++){
+        if (write_buffer[dimm] != NULL) {
+            free(write_buffer[dimm]);
+        }
+        if (read_buffer[dimm] != NULL) {
+            free(read_buffer[dimm]);
+        }
     }
 #if !defined(SV_TEST)
     if (write_fd >= 0) {
